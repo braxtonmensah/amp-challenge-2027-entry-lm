@@ -17,6 +17,22 @@ They are separate repositories because the validator hardcodes `ENTRY_POINT = "g
 `<repo>/generate/library.fasta`. A second entry point under any other name inside one repository is never
 invoked, so the second entry would silently regenerate the first entry's library.
 
+**Declared because Section 2.3 runs a pairwise overlap analysis across submitted libraries and top-100
+lists to detect collusion or duplicate submissions.** Two entries from one author should be checked, so
+here are the numbers, measured rather than asserted:
+
+| comparison between the two entries | result |
+|---|---|
+| identical sequences in the two 50,000-libraries | **0** |
+| identical sequences in the two top-100 lists | **0 of 100** |
+| highest Levenshtein ratio between any cross-entry top-100 pair | **0.667** |
+| cross-entry top-100 pairs at ratio >= 0.8 | **0 of 10,000** |
+
+The **method documentation deliberately overlaps**, by design rather than oversight. The selection rule,
+the three guards, the identity screen and the retractions are identical by construction in both entries,
+precisely so the generative model is the only variable between them. The generation sections, the
+libraries and the candidate lists are entirely distinct.
+
 ---
 
 ## Abstract
