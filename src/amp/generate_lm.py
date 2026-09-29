@@ -41,15 +41,34 @@ a GPU idle is the intended trade: a reproducible library is worth more here than
 
 The rules say reproducibility is checked by running `uv sync` and this entry point "on a Linux
 workstation with a single GPU" and comparing against the submitted library -- a DIFFERENT machine from
-the one that produced the submission. For a transformer that is a real hazard, because each sampled
-token depends on floating-point logits and matrix-multiply reduction order is not guaranteed to match
-across builds. So it is checked both ways, and the measurements are in the README: two runs on one
-machine, and one run on each of two platforms carrying different torch builds (2.14.0+cpu on Windows,
-2.14.0+cu130 on Linux).
+the one that produced the submission. For a transformer that is a real hazard, and it is not
+hypothetical: WE MEASURED IT FAILING.
 
-TIMING, measured rather than guessed: 14 minutes end to end on 8 Linux cores. Windows is roughly four
-times slower on the same core count. ~56,800 draws yield 50,000 unique novel sequences, an 88% keep
-rate after the length, duplicate and reference filters.
+In float32, with one seed and the same torch version (2.14.0), Windows (+cpu build) and Linux (+cu130
+build) produced libraries that differed in exactly one sequence of 50,000:
+
+    Windows: NLVQFEMQILGQLTINAIENPQPK W QHLQR
+    Linux:   NLVQFEMQILGQLTINAIENPQPK S QHLQK
+
+The 24-residue prefix is shared, so a single sampled token flipped and the rest of that sequence
+followed. The mechanism is not mysterious. Each token compares a drawn uniform against a cumulative
+distribution over 23 tokens; matrix-multiply reduction order differs between builds, perturbing logits
+at float32's ~1e-7 scale; a flip happens whenever the draw lands within that band of a boundary. Across
+~1.5 million token draws, one such near-tie is about what you would expect.
+
+Two consecutive runs on ONE machine were byte-identical, in float32 and in float64, and thread count 1
+versus 8 made no difference. So the failure is specifically cross-machine, and "two runs agree here"
+would have concealed it.
+
+THE FIX IS float64 SAMPLING, which shrinks the perturbation to ~1e-16 and the expected flips per
+library to ~1e-10. It costs about 2.4x in time and buys the only property this entry actually claims.
+Getting there also required fixing a latent bug in `lm.py`: the causal mask was built without a dtype,
+so it stayed float32 while the model moved to float64, which silently changed the model's output
+distribution by 0.14 in probability rather than merely rounding it.
+
+TIMING, measured rather than guessed: 14 minutes end to end on 8 Linux cores in float32, roughly 2.4x
+that in float64, and about 4x slower again on Windows. ~56,800 draws yield 50,000 unique novel
+sequences, an 88% keep rate after the length, duplicate and reference filters.
 
 TRAINING DATA. `data/antibacterial.fasta` only, the corpus shipped in the competition template. No
 pretrained weights, no external sequences. Trained weights ship in `checkpoint/peptide_lm.pt`.
@@ -103,7 +122,13 @@ def sample_library(ckpt, ref_path, n, seed=SEED, batch=512, temperature=1.0):
     ck = torch.load(ckpt, map_location="cpu", weights_only=False)
     model = PeptideLM(**ck["cfg"])
     model.load_state_dict(ck["state"])
-    model.eval()
+    # float64, and this is a REPRODUCIBILITY requirement rather than an accuracy one. See the module
+    # docstring: in float32 this library diverged across two machines in exactly one sequence of
+    # 50,000. Each sampled token compares a drawn uniform against a cumulative distribution, so a
+    # logit perturbation of float32's order (~1e-7) flips a token whenever the draw lands that close
+    # to a boundary; over ~1.5 million token draws such a near-tie is expected. float64 shrinks that
+    # perturbation to ~1e-16, putting the expected number of flips per library near 1e-10.
+    model.eval().to(torch.float64)
     torch.manual_seed(seed)
 
     refs = read_fasta(ref_path)

@@ -85,7 +85,17 @@ class PeptideLM(nn.Module):
         T = idx.shape[1]
         p = torch.arange(T, device=idx.device)
         x = self.drop(self.tok(idx) + self.pos(p)[None])
-        mask = torch.triu(torch.full((T, T), float("-inf"), device=idx.device), diagonal=1)
+        # dtype=x.dtype is load-bearing, not tidiness. Written without it, torch.full takes the global
+        # default (float32) whatever dtype the model is in, and feeding a float32 -inf mask into
+        # float64 attention does not merely lose precision -- it produces a DIFFERENT MODEL. Measured
+        # at one sampling position: a float64 model with the float32 mask moved the output
+        # distribution by 0.14 in probability and made EOS the most likely token, where float32 ranked
+        # it outside the top six. With the mask following the dtype, float32 and float64 agree to
+        # 7.7e-08, which is rounding. The shipped float32 path was never affected, because there the
+        # default dtype and the model dtype coincide; the bug only bites the moment anyone changes
+        # precision, which is exactly what the determinism fix below does.
+        mask = torch.triu(torch.full((T, T), float("-inf"), device=idx.device, dtype=x.dtype),
+                          diagonal=1)
         for b in self.blocks:
             x = b(x, mask)
         return self.head(self.ln(x))
