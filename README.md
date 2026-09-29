@@ -367,7 +367,12 @@ entry would have passed the automated check and still been wrong.
 
 ## Repository map
 
-* `src/amp/generate.py` - the entry point. Generation, the shipped scorer, and all three guards.
+* `src/amp/generate_lm.py` - **the entry point** (`uv run generate`). Sampling from the trained model.
+* `src/amp/lm.py` - the model, the training loop, and the corpus encoding.
+* `checkpoint/peptide_lm.pt` - the trained weights this entry samples from, 0.81M parameters.
+* `hpc/train_lm.sbatch` - the job that trained them, so the checkpoint is not an unexplained artifact.
+* `src/amp/generate.py` - NOT the entry point here. Retained because it holds the shipped scorer, the
+  three guards and the identity screen, which this entry imports unchanged from the companion entry.
 * `PREREG_SELECTION.md` - pre-registration 1: should a trained MIC model replace the scorer? Gate failed.
 * `PREREG_SELECTION_2.md` - pre-registration 2: are the scorer's own terms carrying signal? Gates passed.
 * `src/amp/prep_labels.py` - builds panel-matched labels from GRAMPA.
