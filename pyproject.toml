@@ -1,7 +1,7 @@
 [project]
-name = "amp-challenge-entry"
+name = "amp-challenge-entry-lm"
 version = "0.1.0"
-description = "Antimicrobial peptide library generation for the AMP Challenge 2027 (NeurIPS 2026 Competition Track)"
+description = "Antimicrobial peptide library generation with a transformer language model, AMP Challenge 2027 (NeurIPS 2026 Competition Track)"
 readme = "README.md"
 authors = [
     { name = "Braxton Mensah", email = "bsmensah@iu.edu" }
@@ -12,14 +12,19 @@ dependencies = ["numpy>=2.2.6", "levenshtein>=0.27.3",
     "torch>=2.2",
 ]
 
+# `generate` is the transformer in THIS repository. The organizers' validator hardcodes
+# ENTRY_POINT = "generate" and reads generate/library.fasta, so a second model cannot be a second
+# script name inside one repository -- it would never be regenerated, and the entry would silently
+# collapse into a duplicate of the first. Hence a separate repository per model.
+# The order-2 Markov entry is the separate submission at
+# https://github.com/braxtonmensah/amp-challenge-2027-entry
 [project.scripts]
-generate = "amp.generate:main"
-generate_lm = "amp.generate_lm:main"
-generate_broad_spectrum = "amp.generate:main"
-generate_gram_positive = "amp.generate:main"
-generate_gram_negative = "amp.generate:main"
-generate_mdr = "amp.generate:main"
-generate_low_hemolysis = "amp.generate:main"
+generate = "amp.generate_lm:main"
+generate_broad_spectrum = "amp.generate_lm:main"
+generate_gram_positive = "amp.generate_lm:main"
+generate_gram_negative = "amp.generate_lm:main"
+generate_mdr = "amp.generate_lm:main"
+generate_low_hemolysis = "amp.generate_lm:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,4 +1,4 @@
-# AMP Challenge 2027 entry: motif-faithful generation, with a selection rule chosen by measurement
+# AMP Challenge 2027 entry: a transformer language model, with a selection rule chosen by measurement
 
 Braxton Mensah, Indiana University Bloomington (`bsmensah@iu.edu`).
 
@@ -9,15 +9,37 @@ Writes `generate/library.fasta` (50,000 sequences) and `generate/top.fasta` (100
 
 ---
 
+## This is one of two entries, and what makes it a different model
+
+The rules permit one entry per sufficiently different model: *"If a team has two or more sufficiently
+different models, it may submit one entry per model."* This repository generates with a **4-layer
+decoder-only transformer trained from scratch** on the competition corpus. The companion entry,
+[amp-challenge-2027-entry](https://github.com/braxtonmensah/amp-challenge-2027-entry), generates with an
+**order-2 Markov chain**. They share nothing in the generator and everything in the selection rule, which
+is deliberate: it isolates the generative model as the only variable between the two submissions.
+
+**Why two repositories rather than two entry points in one.** The organizers' validator hardcodes
+`ENTRY_POINT = "generate"` and reads `<repo>/generate/library.fasta`. A second entry point under any
+other name is never invoked, so two models in one repository would be regenerated as the same library
+twice and the second entry would collapse into a duplicate of the first with no error raised. One
+repository per model is the only arrangement the validator can distinguish.
+
+**Which one is better is not a question we can answer, and that is the point.** The Phase 1 aggregation
+weights are withheld. The transformer is the better density model by a wide margin and sits closer to the
+real-AMP distribution; the Markov library scores higher on property conformity. Rather than guess which
+the withheld weights reward, both are submitted.
+
 ## Disclosures, up front
 
 **AI assistance.** This repository was written with AI assistance (Anthropic Claude), which the
 competition rules permit and require to be disclosed.
 
 **Training data for generation: one corpus only.** `data/antibacterial.fasta` as shipped in the
-organizers' template, 39,448 sequences, all 8-50 residues. The generator uses no pretrained model and no
-other corpus. It is used for three things: fitting the order-2 transition table, drawing the length
-distribution, and filtering for novelty.
+organizers' template, 39,448 sequences, all 8-50 residues. The transformer is trained from scratch on
+that corpus and nothing else: no pretrained weights, no other sequence source, no tokenizer library. The
+corpus is used for two things here, training the model and filtering for novelty. Lengths are not drawn
+from an empirical distribution in this entry; the model emits its own end-of-sequence token, so the
+length distribution is learned rather than imposed.
 
 **External data used to choose the SELECTION RULE.** Public measured MIC and haemolysis values were used
 to decide the form and the constants of the scoring function. The competition explicitly permits this
@@ -30,26 +52,57 @@ to decide the form and the constants of the scoring function. The competition ex
   severalfold, so training on it would bias every prediction.
 * **HC50**: Hemolytik-derived values, **501 sequences** with both HC50 and panel MIC.
 
-**No model weights are shipped and no learned model runs at generation time.** The evidence was used to
-pick a two-term closed-form scorer and four numeric constants, all hard-coded in `generate.py` with their
-provenance in comments. Generation therefore needs none of the external data, and reproduces from this
-repository alone.
+**Trained weights DO ship in this entry, and a learned model DOES run at generation time.** This is the
+opposite of the companion Markov entry and is stated plainly because the two repositories otherwise read
+alike. `checkpoint/peptide_lm.pt` is the trained transformer, 0.81M parameters, and `uv run generate`
+samples from it. The external MIC and haemolysis data below was used only to choose the **selection**
+rule, which remains a closed-form two-term scorer with hard-coded constants; no learned model scores
+candidates. Generation needs none of the external data and reproduces from this repository alone.
 
-**Determinism.** One seed, `SEED = 20260930`. Two independent runs produce byte-identical
-`library.fasta` and `top.fasta`; verified. See `SEED.md`.
+**Determinism, and why it is checked across platforms.** One seed, `SEED = 20260930`, and sampling is
+pinned to the CPU even when a GPU is present, because CUDA and CPU draw different random streams. The
+rules say reproducibility is verified by running `uv sync` and the entry point *"on a Linux workstation
+with a single GPU"* and comparing against the submitted library. That is a different machine from the one
+that produced the submission, so two identical runs on one machine does not establish it. A transformer
+adds a hazard the Markov chain does not have: the sampled token depends on floating-point logits, and
+matrix-multiply reduction order can differ between builds. This entry is therefore checked both ways, two
+runs on one machine and one run on each of two platforms with different torch builds. See `SEED.md` and
+the reproducibility table below.
 
 ## Method
 
 ### Generation
 
-An **order-2 Markov chain** fitted to the reference actives, so local motifs (`KKIL`, `GKII`) occur at
-their natural frequency instead of being assembled from independent per-position draws. Lengths are
-drawn from the empirical reference length distribution. The library excludes exact matches to the
-reference set and internal duplicates.
+A **decoder-only transformer trained from scratch** on the reference actives: 4 layers, model width 128,
+4 attention heads, learned positional embeddings, 0.81M parameters, trained on `data/antibacterial.fasta`
+with a 5% held-out validation split. Sequences are sampled autoregressively at temperature 1.0 with no
+top-k or nucleus truncation, so the library is drawn from the model's full distribution rather than a
+sharpened one. The library excludes exact matches to the reference set and internal duplicates.
 
-This is a deliberately weak generative model, and the entry does not claim otherwise. Measured on the
-organizers' own `seqme` framework it is nonetheless close to the ceiling set by real AMPs (table below),
-which is the only thing the Phase 1 library metrics ask of it.
+**Why a learned model at all, when the companion entry's Markov chain is deliberately weak.** An order-2
+Markov chain conditions each residue on exactly the previous two. It cannot represent periodicity,
+long-range charge patterning, or any dependency beyond a dipeptide, and those are the features that
+distinguish an amphipathic helix from a random cationic string. The transformer is the honest upgrade, and
+it is measurably a better density model of the corpus on a held-out split:
+
+| model | held-out perplexity |
+|---|---|
+| uniform random over 20 residues | 20.00 |
+| order-2 Markov chain (companion entry) | 14.79 |
+| **this transformer** | **7.72** |
+
+**Why the small model, when a bigger one scored better perplexity.** A larger variant (width 256, 6
+layers, 4.76M parameters) reached a better best validation perplexity, 6.93 against 7.72. It was rejected.
+Its train loss fell to 1.21 while validation rose to 2.10, a 0.88 gap with validation degrading after its
+peak, which is memorisation; and this competition scores novelty against the very corpus it memorised. Its
+library measured a **worse** MMD than even the Markov chain. Bigger lost. Training both sizes is what
+caught it, and the rejected run is kept in the record rather than quietly dropped.
+
+**Capacity is a novelty constraint here, not just a fitting choice.** 39,448 sequences of 8-50 residues
+over a 20-letter alphabet is a small corpus, and every candidate must sit below 80% identity to all of it.
+A model with enough capacity to reproduce its training set is worse than useless for this task, which is
+the reason the selection above is made on distribution metrics and the identity screen rather than on
+perplexity alone.
 
 ### Selection: what we measured, and what we retired
 
@@ -219,26 +272,48 @@ contains 43,025 unique sequences against the template's 39,448, i.e. those two d
 Computed against a **disjoint half** of the reference actives, so the real-AMP row is not scoring against
 itself. Higher is better except FBD and MMD, which are distances.
 
+Measured on the **files this repository ships**, not on a development library. That distinction cost a
+correction: earlier figures for this entry (Diversity 0.858, Conformity 0.490, FBD 0.00568, MMD 0.00097)
+came from a library produced by a `lm.py sample` development path that sizes batches adaptively and will
+use CUDA when a GPU is present. The submitted entry point uses a fixed batch of 512 pinned to the CPU, so
+it draws a different stream and is a different library. Those numbers are withdrawn in favour of these.
+
 | query set | Uniqueness | Diversity | Novelty | Conformity | FBD | MMD |
 |---|---|---|---|---|---|---|
-| held-out **real AMPs** (ceiling) | 1.000 | 0.853 | 1.0 | 0.485 | 0.0049 | 0.00057 |
-| **our library** | 1.000 | **0.850** | 1.0 | **0.570** | **0.0093** | **0.00148** |
-| **our top-100** | 1.000 | **0.825** | 1.0 | **0.596** | **0.0529** | **0.0112** |
-| composition-matched shuffles | 1.000 | 0.856 | 1.0 | 0.504 | 0.0064 | 0.00115 |
-| random K/P, the example generator | 0.979 | 0.479 | 1.0 | 0.147 | 0.354 | 2.378 |
+| held-out **real AMPs** (ceiling) | 1.000 | 0.8530 | 1.0 | 0.4918 | 0.00485 | 0.000502 |
+| **this entry's library** (transformer) | 1.000 | **0.8563** | 1.0 | **0.4850** | **0.00555** | **0.000732** |
+| **this entry's top-100** | 1.000 | 0.8057 | 1.0 | 0.5798 | 0.0550 | 0.01708 |
+| companion entry's library (Markov) | 1.000 | 0.8528 | 1.0 | 0.5759 | 0.00913 | 0.001218 |
+| companion entry's top-100 | 1.000 | 0.8255 | 1.0 | 0.5965 | 0.0529 | 0.01118 |
 
-The library sits at the real-AMP ceiling on diversity, exceeds it on property conformity, and is roughly
-38x closer to the reference distribution than the example generator.
+All five rows were measured in one run against the same disjoint reference half, so they are comparable to
+each other. Each set is subsampled to 2,000 with its own `Random(SEED)` rather than one shared stream, so
+a row's draw does not depend on how many rows precede it; that makes these figures differ in the third
+decimal from the companion entry's README, which consumed a shared stream.
 
-The three guards were kept honest against this table. The top-100 that the retired composite selected
-scored Diversity 0.760, Conformity 0.533, FBD 0.062, MMD 0.077. An unguarded aggressive selection scored
-0.759 / 0.029 / 0.063 / 0.135, trading a Phase 1 collapse for Phase 2 gain. The shipped selection scores
-**0.825 / 0.596 / 0.053 / 0.011**, which is better than the retired composite on *every* metric while
-also carrying +0.247 log10 of predicted safety window. No Phase 1 cost was paid for the Phase 2 gain.
+**Read honestly, the two entries split the result, and neither dominates.**
+
+* **At library level the transformer wins three of four.** It is 39% closer to the reference distribution
+  on FBD (0.00555 against 0.00913) and 40% better on MMD (0.000732 against 0.001218), and its diversity
+  0.8563 is marginally *above* the real-AMP ceiling of 0.8530.
+* **Conformity is the one the Markov chain wins, and the comparison is ambiguous.** The Markov library
+  scores 0.5759, the transformer 0.4850, and held-out real AMPs score 0.4918. So the transformer lands
+  essentially *on* the real-AMP value while the Markov library is markedly **more** property-conforming
+  than real peptides are. Whether the aggregation rewards matching the reference or exceeding it is not
+  knowable from the published rules, and this is the single clearest reason to submit both rather than
+  pick one.
+* **At top-100 level the Markov entry is better**, on diversity (0.8255 against 0.8057) and MMD (0.0112
+  against 0.0171). Selection is identical in both, so this is a property of the candidate pool, not of the
+  scorer.
+
+**A caveat on the top-100 rows.** `seqme`'s FBD implementation emitted `LinAlgWarning: Matrix is singular`
+for both 100-sequence sets: a 400-dimensional dipeptide embedding cannot give a full-rank covariance from
+100 points. The top-100 FBD and MMD figures are therefore order-of-magnitude indicators, not precise
+values, and the gap between the two top-100 rows should not be read as finely as the library rows.
 
 ## Compliance, checked against the organizers' own validator
 
-`scripts/verify_submission.py` from the template, imported and run directly:
+`scripts/verify_submission.py` from the template, imported and run directly against the shipped files:
 
 | check | result |
 |---|---|
@@ -246,11 +321,29 @@ also carrying +0.247 log10 of predicted safety window. No Phase 1 cost was paid 
 | `_verify_no_overlap` vs 39,448 references | PASS |
 | `_verify_top(top.fasta, k=100)` | PASS |
 | `_veritfy_max_simularity(<= 0.80)` | PASS |
-| identity <= 0.80 under all three definitions | PASS, 0 violations, max 0.800 |
-| two independent runs, byte-compared | IDENTICAL |
+| worst top-100 Levenshtein ratio vs any reference | **0.7917** (validator fails above 0.80) |
+| identity <= 0.80 under all three alignment definitions | PASS, 0 violations |
 
 Peptide constraints: 20 standard amino acids, 8-50 residues, linear, free termini, no duplicates. The
-top-100 additionally contains no cysteine.
+top-100 additionally contains no cysteine. Length 10-45, median 21. Net charge median +5, range +4 to +5.
+
+### Two defects in the novelty screen, found by checking the margin rather than the verdict
+
+The validator's similarity check fails on `ratio > 0.8`, and our screen rejected on the same `> 0.8`.
+That is a bar of zero width, and the transformer library landed a candidate exactly on it:
+`VNWKKLFKGVKKIL` against reference `WKKLFKKLKIL` scores 20/25 = **0.800000**. It passed only because two
+independent floating-point divisions agreed. Screening at `>=` instead makes our bar strictly tighter
+than the one we are judged by, and the worst surviving ratio is now 0.7917.
+
+Second, the screen bucketed references by length and scanned a fixed +/-12 window around each candidate.
+The real bound is `[la * r / (2 - r), la * (2 - r) / r]`, i.e. `[2/3 la, 3/2 la]` at r = 0.8, which is
+WIDER than +/-12 for any candidate longer than 36 residues: at length 45 the old code started at 33 while
+the bound starts at 30, so a violating reference of length 31 or 32 would never have been compared. The
+shipped library contains no such pair -- the organizers' exhaustive check passes -- but the screen was
+only accidentally correct, and that is not the same as correct.
+
+Fixing both changed 2 of the 100 selected sequences. This is recorded because the first version of the
+entry would have passed the automated check and still been wrong.
 
 ## Honest limitations
 

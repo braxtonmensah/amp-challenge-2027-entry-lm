@@ -371,12 +371,30 @@ def pick_top(sequences, refs, k, novelty=0.8, max_internal=0.7):
         if len(top) >= k:
             break
         ok = True
-        # ratio > 0.8 requires similar lengths; 2*min/(la+lb) <= ratio bound
-        for lr in range(len(s) - 12, len(s) + 13):
+        # Which reference lengths can possibly violate the bar. Levenshtein.ratio is
+        # (la + lb - dist) / (la + lb) with substitutions costing 2, so the most a pair of lengths can
+        # score is 2 * min(la, lb) / (la + lb). Requiring that bound to reach `novelty` gives
+        #     lb >= la * novelty / (2 - novelty)   and   lb <= la * (2 - novelty) / novelty,
+        # i.e. [2/3 la, 3/2 la] at novelty = 0.8. The previous version scanned a fixed +/-12 window,
+        # which is NARROWER than that bound for any candidate longer than 36 residues: at la = 45 it
+        # scanned from 33 while the bound starts at 30, so a violating reference at length 31 or 32
+        # would never have been compared. The shipped top-100 happens to contain no such pair -- the
+        # organizers' own exhaustive check passes on it -- but the screen was not sound, and a screen
+        # that is only accidentally correct is not a screen.
+        la = len(s)
+        lo = int(la * novelty / (2.0 - novelty))          # floor is the safe direction here
+        hi = int(la * (2.0 - novelty) / novelty) + 1      # +1 so the bound is inclusive
+        for lr in range(lo, hi + 1):
             if not ok:
                 break
             for r in bylen.get(lr, ()):
-                if Levenshtein.ratio(s, r) > novelty:
+                # `>=`, not `>`. The validator fails on `> 0.8`, so a candidate sitting at exactly
+                # 0.800000 passes by a margin of zero and survives only because two independent
+                # floating-point divisions agree. The transformer library produced exactly such a
+                # candidate (VNWKKLFKGVKKIL against WKKLFKKLKIL, 20/25 = 0.8 exactly). Screening at
+                # `>=` makes our bar strictly tighter than the one we are judged by, which is the
+                # only side of that boundary worth being on.
+                if Levenshtein.ratio(s, r) >= novelty:
                     ok = False
                     break
         if ok and not _identity_ok(s, refs, novelty):

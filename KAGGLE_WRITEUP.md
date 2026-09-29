@@ -1,51 +1,142 @@
-# AMP Challenge 2027 submission writeup
+# AMP Challenge 2027 submission writeup — transformer entry
 
 Paste-ready. Everything below is checkable against the repository.
 
 **Team / author:** Braxton Mensah, Indiana University Bloomington, `bsmensah@iu.edu`
-**Repository:** https://github.com/braxtonmensah/amp-challenge-2027-entry (public, MIT)
+**Repository:** https://github.com/braxtonmensah/amp-challenge-2027-entry-lm (public, MIT)
 **Entry point:** `uv sync` then `uv run generate`
 **Category emphasis:** Optimal Selectivity (safety window HC50/MIC50)
+
+**This is the second of two entries.** The rules permit one entry per sufficiently different model. The
+companion entry, https://github.com/braxtonmensah/amp-challenge-2027-entry, generates with an order-2
+Markov chain. This one generates with a transformer trained from scratch. They share the selection rule
+exactly and share nothing in the generator, which makes the generative model the only variable between
+the two submissions.
+
+They are separate repositories because the validator hardcodes `ENTRY_POINT = "generate"` and reads
+`<repo>/generate/library.fasta`. A second entry point under any other name inside one repository is never
+invoked, so the second entry would silently regenerate the first entry's library.
 
 ---
 
 ## Abstract
 
-An order-2 Markov chain fitted to the competition's 39,448 reference antibacterials generates a library
-of 50,000 novel linear peptides, preserving natural dipeptide motif frequencies and the empirical length
-distribution. The top-100 are selected by a deliberately minimal scorer,
-`rank(net charge) - rank(mean hydrophobicity)`, that was **chosen by measurement rather than assertion**:
-each candidate term was first tested against 2,904 published MIC-labelled peptides filtered to match the
-competition's own peptide constraints, and the resulting scorer was adopted against pre-registered gates
-evaluated on a similarity-clustered held-out split. The submission's distinguishing feature is not its
-generative model, which is weak by design, but that every selection choice in it is falsifiable and two of
-our own prior claims were retracted on measurement.
+A 4-layer decoder-only transformer (0.81M parameters) trained from scratch on the competition's 39,448
+reference antibacterials generates a library of 50,000 novel linear peptides. On a held-out split it
+reaches perplexity 7.72 against 14.79 for an order-2 Markov chain and 20.00 for uniform random, and its
+library sits closer to the reference distribution than the Markov library on FBD and MMD. The top-100 are
+selected by the same deliberately minimal scorer used in the companion entry,
+`rank(net charge) - rank(mean hydrophobicity)`, chosen by measurement against 2,904 published
+MIC-labelled peptides rather than asserted. Two things distinguish this submission: a larger transformer
+that scored better perplexity was **trained, measured and rejected** for memorisation, and
+reproducibility is verified across two platforms with different torch builds rather than twice on one
+machine.
 
 ## Method
 
-**Generation.** Order-2 Markov chain over amino acids, fitted to `data/antibacterial.fasta` only. Lengths
-drawn from the empirical reference distribution. Exact reference matches and internal duplicates excluded.
-Single seed (`20260930`); two runs are byte-identical.
+**Generation.** Decoder-only transformer, 4 layers, width 128, 4 heads, learned positional embeddings,
+0.81M parameters. Trained on `data/antibacterial.fasta` only, 5% held out for validation, no pretrained
+weights and no other corpus. Sampled autoregressively at temperature 1.0 with no top-k or nucleus
+truncation, so the library comes from the model's full distribution rather than a sharpened one. Length
+is learned, not imposed: the model emits its own end-of-sequence token. Exact reference matches and
+internal duplicates are excluded. 56,800 draws yield 50,000 unique novel sequences, an 88% keep rate.
+Trained weights ship in `checkpoint/peptide_lm.pt`.
 
-**Selection.** `rank(net charge) - rank(mean hydrophobicity)` within the candidate pool. Two terms, no
-fitted weights, restricted by three guards:
+| density model, same corpus and held-out split | perplexity |
+|---|---|
+| uniform random over 20 residues | 20.00 |
+| order-2 Markov chain (companion entry) | 14.79 |
+| **this transformer** | **7.72** |
 
-1. **Measured envelope** — net charge in [-1, +5], mean Eisenberg hydrophobicity in [-0.05, +0.65], a band of the labelled distribution.
-2. **Composition guard** at the 95th percentile of the reference actives (max single residue <= 0.500,
-   W <= 0.238, aromatic FWY <= 0.333, Q <= 0.111), and cysteine excluded outright for synthesis quality.
-3. **Internal diversity cap** — pairwise Levenshtein ratio <= 0.7 within the 100, since the 25 assayed
-   peptides are drawn uniformly at random and near-duplicates waste draws.
+**A bigger model was trained, measured, and rejected.** Width 256, 6 layers, 4.76M parameters, best
+validation perplexity 6.93 — better than the shipped model's 7.72. It was thrown away. Its train loss
+fell to 1.21 while validation rose to 2.10, a 0.88 gap with validation degrading after its peak, which is
+memorisation; and this competition scores novelty against the very corpus it memorised. Its library
+measured a **worse** MMD than even the Markov chain. Bigger lost. Training both sizes is what caught it.
 
-**Novelty screening.** Candidates must clear 80% sequence identity under three definitions simultaneously
-(matches/shorter-length, local alignment at coverage >= 0.8, and full-length global alignment), by BLOSUM62
-alignment, because a Levenshtein edit ratio is not sequence identity. The shipped top-100 has zero
-violations under all three, maximum identity 0.800.
+**Selection.** Identical to the companion entry: `rank(net charge) - rank(mean hydrophobicity)`, two
+terms, no fitted weights, restricted by three guards — a measured envelope (net charge [-1, +5], mean
+Eisenberg hydrophobicity [-0.05, +0.65]), a composition guard at the 95th percentile of the reference
+actives with cysteine excluded outright, and an internal pairwise-Levenshtein cap of 0.7 because the 25
+assayed peptides are drawn uniformly at random and near-duplicates waste draws.
+
+**Novelty screening.** Candidates must clear 80% identity under three definitions simultaneously
+(matches/shorter-length, local alignment at coverage >= 0.8, and full-length global alignment) by BLOSUM62
+alignment, because a Levenshtein edit ratio is not sequence identity.
+
+## Reproducibility, checked across platforms rather than twice on one machine
+
+The rules say organizers verify by running `uv sync` and the entry point *"on a Linux workstation with a
+single GPU"*, comparing against the submitted library. That is a different machine from the one that
+produced the submission, so two identical runs on one machine does not establish it. A transformer adds a
+hazard a Markov chain does not have: every sampled token depends on floating-point logits, and
+matrix-multiply reduction order is not guaranteed to match across builds or thread counts.
+
+Sampling is therefore pinned to the CPU even when a GPU is present, because CUDA and CPU draw different
+random streams. Leaving a GPU idle is the intended trade.
+
+| check | result |
+|---|---|
+| two consecutive runs, same Linux machine, byte-compared | see repository |
+| Windows `torch 2.14.0+cpu` vs Linux `torch 2.14.0+cu130` | keep counts identical at every checkpoint |
+| thread count 1 vs 8, same machine | identical |
+| fresh clone of the public repo on Linux, `compileall` + import | pass |
+
+The last row exists because an earlier push of this entry did **not** parse on a fresh clone: `\n` escapes
+in the FASTA writer had been flattened into real newlines, and it went unnoticed locally because the
+running process had already imported an earlier copy. Compiling the committed blob, not the working tree,
+is now part of the check.
+
+## Phase 1 self-measurement (`seqme`, against a disjoint reference half)
+
+Measured on the files this repository ships, in one run, so all five rows are comparable.
+
+| query set | Uniqueness | Diversity | Novelty | Conformity | FBD | MMD |
+|---|---|---|---|---|---|---|
+| held-out real AMPs (ceiling) | 1.000 | 0.8530 | 1.0 | 0.4918 | 0.00485 | 0.000502 |
+| **this entry's library** (transformer) | 1.000 | **0.8563** | 1.0 | **0.4850** | **0.00555** | **0.000732** |
+| **this entry's top-100** | 1.000 | 0.8057 | 1.0 | 0.5798 | 0.0550 | 0.01708 |
+| companion entry's library (Markov) | 1.000 | 0.8528 | 1.0 | 0.5759 | 0.00913 | 0.001218 |
+| companion entry's top-100 | 1.000 | 0.8255 | 1.0 | 0.5965 | 0.0529 | 0.01118 |
+
+The two entries split the result and neither dominates. At library level the transformer wins three of
+four: 39% closer on FBD, 40% better on MMD, and diversity 0.8563 marginally above the real-AMP ceiling of
+0.8530. Conformity is the one the Markov chain wins (0.5759 against 0.4850) and the comparison is
+genuinely ambiguous, because real AMPs score 0.4918 — the transformer lands *on* the reference value while
+the Markov library is more property-conforming than real peptides are, and the published rules do not say
+which the aggregation rewards. At top-100 level the Markov entry is better on diversity and MMD; selection
+is identical in both entries, so that is a property of the candidate pool rather than the scorer.
+
+Earlier figures circulated for this entry (Diversity 0.858, Conformity 0.490, FBD 0.00568, MMD 0.00097)
+are **withdrawn**: they were measured on a development library from a code path that sizes batches
+adaptively and uses CUDA when available, not on what the submitted entry point produces.
+
+**Caveat.** `seqme`'s FBD emitted `LinAlgWarning: Matrix is singular` for both 100-sequence sets — a
+400-dimensional dipeptide embedding cannot yield a full-rank covariance from 100 points — so the top-100
+FBD and MMD values are order-of-magnitude indicators, not precise numbers.
+
+## Two defects in the novelty screen, found by checking the margin rather than the verdict
+
+The validator fails similarity on `ratio > 0.8` and our screen rejected on the same `> 0.8`, a bar of
+zero width. The transformer library landed a candidate exactly on it: `VNWKKLFKGVKKIL` against reference
+`WKKLFKKLKIL`, 20/25 = **0.800000**, which passed only because two independent floating-point divisions
+agreed. Screening at `>=` makes our bar strictly tighter than the one we are judged by; the worst
+surviving ratio is 0.7917.
+
+Second, the screen scanned a fixed +/-12 reference-length window. The real bound is `[2/3 la, 3/2 la]` at
+ratio 0.8, which is wider than +/-12 for any candidate longer than 36 residues: at length 45 the old code
+started at 33 while the bound starts at 30, so a violating reference of length 31 or 32 was never
+compared. No such pair exists in the shipped library — the organizers' exhaustive check passes — but the
+screen was only accidentally correct.
+
+Fixing both changed 2 of the 100 selected sequences.
 
 ## What we measured, and what we retracted
 
-An earlier version of this entry scored candidates with a four-term composite (banded charge 0.40,
-hydrophobic moment 0.30, banded hydrophobicity 0.20, helix propensity 0.10). Measured against panel
-success rate (MIC <= 16 uM, weighted 15:5 Gram-negative:Gram-positive to match the official panel):
+Carried over from the companion entry, because the selection rule is shared and the retractions apply to
+both. An earlier version scored candidates with a four-term composite (banded charge 0.40, hydrophobic
+moment 0.30, banded hydrophobicity 0.20, helix propensity 0.10). Measured against panel success rate
+(MIC <= 16 uM, weighted 15:5 Gram-negative:Gram-positive to match the official panel):
 
 | term | old weight | Spearman | AUC |
 |---|---|---|---|
@@ -56,94 +147,72 @@ success rate (MIC <= 16 uM, weighted 15:5 Gram-negative:Gram-positive to match t
 | helix propensity | 0.10 | -0.006 | **0.498** |
 | the composite | | +0.158 | **0.595** |
 
-The moment and helix terms were indistinguishable from noise, banding the charge destroyed signal, and the
-composite ranked worse than net charge alone. **We retract our earlier claim** that banding hydrophobicity
-buys a safety window.
+The moment and helix terms were indistinguishable from noise and the composite ranked worse than net
+charge alone. **We retract our earlier claim** that banding hydrophobicity buys a safety window.
 
 **And we retract a second claim, against prior art.** We had argued the hydrophobicity/activity
-relationship is monotone, making a band the wrong instrument. That is wrong: Chen et al. 2007 (*Antimicrob
-Agents Chemother* 51:1398-1406) establishes an optimum hydrophobicity window for potency at constant net
-charge, and our own data agrees once charge is held fixed (success rate 0.551 in our band against 0.665 at
-hydrophobicity 0.05-0.25, binned at charge +4 to +5). Our monotone reading was the charge confound
-(r = -0.729) surviving into a conclusion. We keep the low-hydrophobicity selection for a narrower reason
-given below, not because Chen et al. are wrong. On 501 peptides with paired HC50 and panel MIC, controlling for net charge (the two
-correlate -0.729): hydrophobicity buys potency (partial rho -0.176 on log MIC) but costs haemolysis about
-twice as much (-0.366 on log HC50), netting -0.239 on log safety window. The trade is real and not worth
-taking, and being monotone, a band was the wrong instrument.
+relationship is monotone. That is wrong: Chen et al. 2007 (*Antimicrob Agents Chemother* 51:1398-1406)
+establishes an optimum hydrophobicity window at constant net charge, and our own data agrees once charge
+is held fixed (success 0.551 in our band against 0.665 at hydrophobicity 0.05-0.25, at charge +4 to +5).
+Our monotone reading was the charge confound (r = -0.729) surviving into a conclusion. We keep the
+low-hydrophobicity selection for a narrower reason: on 501 peptides with paired HC50 and panel MIC,
+controlling for charge, hydrophobicity buys potency (partial rho -0.176 on log MIC) but costs haemolysis
+about twice as much (-0.366 on log HC50), netting -0.239 on log safety window.
 
-Adopted against three gates pre-registered in `PREREG_SELECTION_2.md`, on a cluster-disjoint held-out half:
-
-| scorer, top-100 of held-out half | median log SW | mean success rate |
-|---|---|---|
-| random 100 | 1.157 | 0.591 |
-| the retired composite | 1.288 | 0.615 |
-| fitted 3-descriptor ridge | 1.550 | 0.628 |
-| **shipped scorer** | **1.541** | **0.682** |
-
-The fitted ridge beat the simple form by 0.009 log10, inside the pre-registered simplicity margin, so its
-weights were discarded.
+**A trained MIC model was tested and is NOT shipped.** Pre-registered in `PREREG_SELECTION.md`: a
+descriptor ridge learned real signal (grouped-CV Spearman +0.361 against a -0.074 shuffled-label null)
+but its top-100 beat the biophysical scorer by **+0.002** on measured success rate. The gate failed and we
+report that rather than shipping the more sophisticated method. This says nothing about deep *generative*
+models, which is why this entry exists.
 
 **Why we target one category and concede four.** Optimal Selectivity ranks on mean HC50/MIC50 and
 **excludes peptides inactive on every strain rather than scoring them zero**, so its objective is
-E[SW | active] and the dead fraction barely enters; the other four categories average Success Rate over all
-25, where dead peptides drag the mean. On the paired HC50/MIC subset at charge +3 to +7, our band gives
-E[log SW | active] **1.839** against **1.239** for the old band, at the highest active fraction of any bin
-(0.923). Stated conflict: a larger sample (n=109, charge +4 to +5, MIC labels only) favours the old band on
-success rate, 0.665 against 0.551, and it is the more reliable estimate of the potency question. So we
-most likely concede some success rate deliberately.
-
-**A trained MIC model was tested and is NOT shipped.** Pre-registered in `PREREG_SELECTION.md`: a
-descriptor ridge model learned real signal (grouped-CV Spearman +0.361 against a -0.074 shuffled-label
-null) but its top-100 beat the biophysical scorer by **+0.002** on measured success rate. The primary gate
-failed and we report that rather than shipping the more sophisticated method.
-
-## Phase 1 self-measurement (`seqme`, against a disjoint reference half)
-
-| query set | Uniqueness | Diversity | Novelty | Conformity | FBD | MMD |
-|---|---|---|---|---|---|---|
-| held-out real AMPs (ceiling) | 1.000 | 0.853 | 1.0 | 0.485 | 0.0049 | 0.00057 |
-| **our library** | 1.000 | **0.850** | 1.0 | **0.570** | **0.0093** | **0.00148** |
-| **our top-100** | 1.000 | **0.825** | 1.0 | **0.596** | **0.0529** | **0.0112** |
-| composition-matched shuffles | 1.000 | 0.856 | 1.0 | 0.504 | 0.0064 | 0.00115 |
-| random K/P (example generator) | 0.979 | 0.479 | 1.0 | 0.147 | 0.354 | 2.378 |
+E[SW | active] and the dead fraction barely enters; the other four categories average success rate over
+all 25, where dead peptides drag the mean. Stated conflict: a larger sample (n=109, charge +4 to +5, MIC
+only) favours the old band on success rate, 0.665 against 0.551, and is the more reliable estimate of the
+potency question. So we most likely concede some success rate deliberately.
 
 ## Training data, external databases, and manual interventions
 
 **Generation** uses one corpus: `data/antibacterial.fasta` as shipped in the template (39,448 sequences).
-No pretrained model, no other corpus.
+No pretrained model, no other corpus. Trained weights ship in the repository.
 
-**External public data was used to choose the selection rule** (permitted by the rules):
+**External public data was used to choose the selection rule** (permitted by the rules): MIC from the
+51,345 measurements aggregated in GRAMPA (DBAASP, DRAMP, YADAMP, APD, DADP), filtered to unmodified
+free-termini 20-standard-AA 8-50aa peptides on panel species, giving 2,904 labelled sequences; HC50 from
+Hemolytik-derived values, 501 sequences with both HC50 and panel MIC; DRAMP 3.0 used only to bound the
+novelty reference gap (adds ~9% new sequence over the template). Excluding amidated entries is mandatory
+here: this competition forbids terminal modification and amidation shifts MIC severalfold.
 
-* MIC: 51,345 measurements aggregated in GRAMPA from DBAASP, DRAMP, YADAMP, APD and DADP, filtered to
-  unmodified free-termini 20-standard-AA 8-50aa peptides on panel species -> 2,904 labelled sequences.
-  Excluding amidated entries is mandatory here: this competition forbids terminal modification and
-  amidation shifts MIC severalfold.
-* HC50: Hemolytik-derived values; 501 sequences with both HC50 and panel MIC.
-* DRAMP 3.0, used only to bound the novelty reference gap (adds ~9% new sequence over the template).
-
-**No model weights are shipped and no learned model runs at generation time.** The evidence chose a
-closed-form two-term scorer and four numeric constants, hard-coded with provenance in `generate.py`.
-Generation reproduces from the repository alone.
+**A learned model runs at generation time in this entry** — that is the whole point of it — but no
+learned model scores candidates. Selection is a closed-form two-term scorer with hard-coded constants
+whose provenance is in `generate.py` comments.
 
 **Manual interventions and filters**, all in `pick_top`: the measured envelope, the composition guard with
-cysteine exclusion, the internal diversity cap, and the three-definition identity screen. Each is
-documented in code with the measurement that motivated it.
+cysteine exclusion, the internal diversity cap, and the three-definition identity screen.
 
 ## Limitations
 
 1. No experimental validation of anything here; every relationship was measured on published peptides.
 2. Applied out of distribution by construction: candidates must sit below 80% identity to known AMPs while
    every fitted relationship comes from known AMPs.
-3. An order-2 Markov chain captures dipeptide context and nothing longer.
-4. The haemolysis source file has malformed line endings and was parsed heuristically (1,258 recovered,
-   501 joined), range-checked to 0 < log10 HC50 < 4.
-5. We do not claim to beat a null: no published study MIC-tests random or composition-matched peptides at
-   this competition's <= 16 uM threshold, so no comparable null exists.
+3. The generator is a 0.81M-parameter model trained on 39,448 short sequences. It is a better density
+   model of that corpus than a dipeptide chain, which is a low bar, and it is far from the published
+   state of the art in AMP generation.
+4. Perplexity is not activity. The transformer is measurably the better model of the corpus; nothing here
+   demonstrates that this yields more active peptides, and Phase 2 is what would test it.
+5. The three-definition identity screen prefilters on `abs(len(r) - len(s)) > 20` and on a Levenshtein
+   floor of 0.45. Those prefilters are heuristics, not proven bounds like the one fixed above, so the
+   alignment-based screen is best-effort; the Levenshtein screen that the validator actually runs is
+   exhaustive and sound.
 6. Novelty is screened against the template's 39,448 rather than MarLys, which we could not obtain.
+7. We do not claim to beat a null: no published study MIC-tests random or composition-matched peptides at
+   this competition's <= 16 uM threshold.
 
 ## AI assistance
 
 This repository was written with AI assistance (Anthropic Claude), disclosed as the rules require. The
-scientific judgements, in particular the decision to retract the hydrophobicity-band rationale and to
-discard fitted weights in favour of a two-term scorer, are stated explicitly so a reviewer can disagree
-with them on the record.
+scientific judgements — rejecting the larger transformer for memorisation, retracting the
+hydrophobicity-band rationale, discarding fitted weights, and submitting two models rather than guessing
+which the withheld Phase 1 weights reward — are stated explicitly so a reviewer can disagree with them on
+the record.
