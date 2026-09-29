@@ -65,9 +65,33 @@ rules say reproducibility is verified by running `uv sync` and the entry point *
 with a single GPU"* and comparing against the submitted library. That is a different machine from the one
 that produced the submission, so two identical runs on one machine does not establish it. A transformer
 adds a hazard the Markov chain does not have: the sampled token depends on floating-point logits, and
-matrix-multiply reduction order can differ between builds. This entry is therefore checked both ways, two
-runs on one machine and one run on each of two platforms with different torch builds. See `SEED.md` and
-the reproducibility table below.
+matrix-multiply reduction order can differ between builds.
+
+**That hazard is not hypothetical here. We measured float32 failing.** With one seed and the same torch
+version, a Windows `+cpu` build and a Linux `+cu130` build produced libraries differing in exactly one
+sequence of 50,000: a single sampled token flipped 25 residues in, and the rest of that sequence followed.
+
+    Linux   float32: NLVQFEMQILGQLTINAIENPQPK S QHLQK
+    Windows float32: NLVQFEMQILGQLTINAIENPQPK W QHLQR
+    both    float64: NLVQFEMQILGQLTINAIENPQPK W QHLQR
+
+**Sampling therefore runs in float64**, which shrinks the logit perturbation from float32's ~1e-7 to
+~1e-16 and the expected token flips per library from about one to about 1e-10, for roughly 2.4x the
+runtime. Verified on two genuinely different CPU architectures, an AMD EPYC 7742 and an Intel Xeon Gold
+6248, which select different matmul kernels and therefore different reduction orders: **byte-identical
+library and top-100 on both.** Two consecutive runs on one node are also byte-identical, and thread count
+1 versus 8 changes nothing.
+
+Reaching float64 exposed a latent bug worth naming: `lm.py` built its causal mask with `torch.full` and no
+dtype, so it stayed float32 while the model moved to float64. That is not a rounding difference. At one
+sampling position it shifted the output distribution by 0.14 in probability and made EOS the most likely
+token where float32 ranked it outside the top six. With the mask following `x.dtype`, float32 and float64
+agree to 7.7e-08. The shipped float32 path was never affected, because there the two dtypes coincide,
+which is exactly why it went unnoticed.
+
+**What the fix did not buy.** It changed one sequence in 50,000 and left every Phase 1 metric below
+unchanged to six decimal places. It bought reproducibility, not library quality, and is not claimed as
+the latter. See `SEED.md`.
 
 ## Method
 

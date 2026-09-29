@@ -75,12 +75,35 @@ matrix-multiply reduction order is not guaranteed to match across builds or thre
 Sampling is therefore pinned to the CPU even when a GPU is present, because CUDA and CPU draw different
 random streams. Leaving a GPU idle is the intended trade.
 
-| check | result |
-|---|---|
-| two consecutive runs, same Linux machine, byte-compared | see repository |
-| Windows `torch 2.14.0+cpu` vs Linux `torch 2.14.0+cu130` | keep counts identical at every checkpoint |
-| thread count 1 vs 8, same machine | identical |
-| fresh clone of the public repo on Linux, `compileall` + import | pass |
+**We measured float32 failing this, and fixed it.** Same seed, same torch version, a Windows `+cpu` build
+and a Linux `+cu130` build produced libraries differing in exactly one sequence of 50,000:
+
+    Linux   float32: NLVQFEMQILGQLTINAIENPQPK S QHLQK
+    Windows float32: NLVQFEMQILGQLTINAIENPQPK W QHLQR
+    both    float64: NLVQFEMQILGQLTINAIENPQPK W QHLQR
+
+| check | precision | result |
+|---|---|---|
+| Windows `2.14.0+cpu` vs Linux `2.14.0+cu130` | float32 | **DIVERGED, 1 sequence of 50,000** |
+| **AMD EPYC 7742 vs Intel Xeon Gold 6248** | **float64** | **byte-identical, library and top** |
+| two consecutive runs, same node | float64 | byte-identical |
+| thread count 1 vs 8, same machine | both | identical |
+| fresh clone of the public repo on Linux, `compileall` + import | - | pass |
+
+Sampling therefore runs in float64, which takes the logit perturbation from ~1e-7 to ~1e-16 and the
+expected flips per library from about one to about 1e-10, at roughly 2.4x runtime. The two float64 rows
+are on different CPU architectures, AMD Zen 2 and Intel Cascade Lake, which select different matmul
+kernels and hence different reduction orders: exactly the condition float32 failed under.
+
+Reaching float64 exposed a latent bug. The causal mask was built by `torch.full` with no dtype, so it
+stayed float32 while the model moved to float64. At one sampling position that shifted the output
+distribution by 0.14 in probability and made EOS the most likely token where float32 ranked it outside the
+top six. With the mask following `x.dtype`, the two precisions agree to 7.7e-08. The shipped float32 path
+was never affected because there the dtypes coincide, which is why it went unnoticed.
+
+**What the fix did not buy.** One sequence in 50,000 changed, and every Phase 1 metric below is unchanged
+to six decimal places. This is a reproducibility fix, not a quality improvement, and we do not present it
+as one.
 
 The last row exists because an earlier push of this entry did **not** parse on a fresh clone: `\n` escapes
 in the FASTA writer had been flattened into real newlines, and it went unnoticed locally because the
