@@ -23,10 +23,17 @@ here are the numbers, measured rather than asserted:
 
 | comparison between the two entries | result |
 |---|---|
-| identical sequences in the two 50,000-libraries | **0** |
+| identical sequences in the two 50,000-libraries | **2 of 50,000** (0.004%) |
 | identical sequences in the two top-100 lists | **0 of 100** |
 | highest Levenshtein ratio between any cross-entry top-100 pair | **0.667** |
 | cross-entry top-100 pairs at ratio >= 0.8 | **0 of 10,000** |
+
+The two full-library collisions are reported rather than rounded away: two short cationic sequences that
+both generators independently reached. At 50,000 draws each over a 20-letter alphabet a handful of
+collisions is what genuine independence predicts, and zero would be the more surprising number. An
+earlier revision of this table reported **0**, which was true of the companion entry's previous library
+and became false when that library was regenerated against its potent-AMP corpus. Corrected here rather
+than left to be discovered.
 
 The **method documentation deliberately overlaps**, by design rather than oversight. The selection rule,
 the three guards, the identity screen and the retractions are identical by construction in both entries,
